@@ -19,3 +19,9 @@ layers[1].events.tileload();
 assert(control.setKey(key,'tdtimg'));assert.equal(control.current(),'tdtimg');assert.equal(layers.length,4);layers[2].events.tileload();
 control.clearKey();assert.equal(control.current(),'topo');layers.at(-1).events.tileload();
 console.log('Passed: provider limits, key validation/isolation, base+label order, zoom clamp, one-shot fallback, key clearing.');
+
+const siteControl=installBasemaps(L,map,{select,notice,openSettings:{addEventListener(){}},requestKey(){throw Error("Site configuration should not prompt for a key");}},{provider:"tdt",key});
+assert.equal(siteControl.current(),"tdt");
+assert(layers.at(-2).url.includes("/vec_w/")&&layers.at(-1).url.includes("/cva_w/"));
+layers.at(-1).events.tileload();
+console.log("Passed: published configuration starts Tianditu without user input.");

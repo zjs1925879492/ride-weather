@@ -20,17 +20,17 @@
 
 地图左上角可以切换提供商：
 
-- OpenTopoMap：默认地形图，不需要 Key，保留来源署名；服务在海外，国内网络仍需实测。
+- OpenTopoMap：备用地形图，不需要 Key，保留来源署名；服务在海外，国内网络仍需实测。
 - OpenStreetMap：保留为备用。无底图成功加载时，会在超时或连续失败后尝试一次备用源，不循环重试。
-- 天地图矢量／影像：国内服务入口，包含中文注记，需要在地图设置中填写自己申请的浏览器端 Key。Key 只留在本页内存中，发送给天地图官方瓦片接口；不会提交到本仓库或网站服务器。不要在仓库中提交 Key。刷新页面后需重新填写。
+- 天地图矢量／影像：默认使用矢量底图和中文注记，可切换影像。`map-config.js` 保存网站所有者提供的公开浏览器端配置；Key 需要限制到两个发布域名。此 Key 会在网页和瓦片请求中可见，不适用于服务端秘密。地图设置仍支持临时填写其他 Key，刷新后恢复网站默认值。
 
-轨迹与天气查询沿用 GPX 地理坐标，天地图使用 `_w` 墨卡托瓦片；未接入需要 GCJ-02 或 BD-09 偏移的高德、百度瓦片。天地图需要真实 Key 后继续验证授权与路线叠加。
+轨迹与天气查询沿用 GPX 地理坐标，天地图使用 `_w` 墨卡托瓦片；未接入需要 GCJ-02 或 BD-09 偏移的高德、百度瓦片。实际授权取决于天地图控制台的 Key 类型与域名白名单。
 
 本次移除了 Google Fonts 请求，字体使用设备已有字体。地图、天气、地名是三个独立外部服务，更换地图或部署平台不会自动解决其他接口的网络问题。
 
-## Cloudflare Pages
+## Cloudflare 部署
 
-详细步骤见 [CLOUDFLARE.md](./CLOUDFLARE.md)。选择 GitHub 中的此仓库，生产分支 main，框架 None，构建命令 exit 0，输出目录 `.`，根目录保持默认。仓库文件已位于根目录，此处不填写 dist。
+当前已通过 Cloudflare Workers Builds 连接本仓库的 main 分支。构建时只复制网页、脚本、`map-config.js` 和 assets 到 public 目录，再发布该目录；避免将 node_modules 作为地图资源上传。后续 main 提交自动发布。旧的 Pages 手动部署步骤见 [CLOUDFLARE.md](./CLOUDFLARE.md)。
 
 ## 本地运行与检查
 
@@ -44,7 +44,7 @@
 
 - 天气：[Open-Meteo](https://open-meteo.com/)，其免费 API 限个人非商业用途，需遵守官方调用额度与署名要求。
 - 地名：[Photon](https://photon.komoot.io/) / OpenStreetMap，公共服务仅适合合理请求量，可能限流或不可用。
-- 地图：默认 [OpenTopoMap](https://opentopomap.org/about)（地图署名 OpenStreetMap、SRTM、OpenTopoMap，CC-BY-SA），备用 [OpenStreetMap contributors](https://www.openstreetmap.org/copyright)，可选 [天地图](https://www.tianditu.gov.cn/)。地图组件 Leaflet 1.9.4 的许可见 assets/LEAFLET-LICENSE.txt。
+- 地图：默认 [天地图](https://www.tianditu.gov.cn/)，备用 [OpenTopoMap](https://opentopomap.org/about)（地图署名 OpenStreetMap、SRTM、OpenTopoMap，CC-BY-SA），备用 [OpenStreetMap contributors](https://www.openstreetmap.org/copyright)，可选 [天地图](https://www.tianditu.gov.cn/)。地图组件 Leaflet 1.9.4 的许可见 assets/LEAFLET-LICENSE.txt。
 - GPX 在浏览器解析，不上传完整文件；查询天气和地名时向相应服务发送采样点坐标。缓存仅在本次页面内存中。
 - 区域是采样点附近地名，不是严格的行政边界相交结果，可能遗漏短距离跨界。预报按最近整点匹配，天气与到达时刻均有误差。
 - 此版本支持未来 15 天内的骑行计划，不提供历史天气。所有输入和显示时间均为北京时间。
