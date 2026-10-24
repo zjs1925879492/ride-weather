@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import {prepareRoute,sampleRoute,arrivalEpoch,nearestHour,weatherAt,headwind} from './core.js';
+const a=prepareRoute([[{lat:0,lon:0},{lat:0,lon:1}],[{lat:20,lon:20},{lat:20,lon:21}]]);
+assert(a.km>210&&a.km<220,'Separate tracks must not be joined across an artificial gap');
+const r=prepareRoute([Array.from({length:1001},(_,i)=>({lat:31,lon:119+i/1000}))]);
+const samples=sampleRoute(r,10,8);assert(samples.length<=8);assert.equal(samples[0].km,0);assert.equal(samples.at(-1).km,r.km);
+assert.equal(arrivalEpoch(0,50,25,60,100),9000);
+assert.equal(nearestHour([0,3600,7200],4300),1);assert.equal(nearestHour([0,3600],10000),-1);
+assert.equal(weatherAt({hourly:{time:[0],temperature_2m:[null]}},0).temp,null);
+assert.equal(weatherAt({hourly:{time:[0]}},10000),null);
+assert.equal(headwind(20,0,0),20);assert.equal(headwind(20,180,0),-20);
+console.log('Passed: disjoint segments, capped distance sampling, ETA/rest, forecast range, null data, wind direction.');
