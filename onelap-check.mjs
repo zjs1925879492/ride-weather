@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import {validateOnelapLink,fetchOnelapRoute,ONELAP_ENDPOINT} from './onelap.js';
+for(const url of ['https://www.onelap.cn/bikeroute/detail.html?id=54848&routeType=route','https://www.onelap.cn/bikeroute/detail_old.html?id=6abff07ac0a1641f951356e9&routeType=myroute'])assert(validateOnelapLink(url));
+for(const url of ['https://onelap.cn.evil.test/?id=54848&routeType=route','http://www.onelap.cn/?id=54848&routeType=route','https://www.onelap.cn/mRouter/index.html#/index?nid=1915243'])assert.throws(()=>validateOnelapLink(url));
+const url='https://www.onelap.cn/bikeroute/detail.html?id=54848&routeType=route';
+const data=await fetchOnelapRoute(url,'BD09',{fetchImpl:async(endpoint,options)=>{assert.equal(endpoint,ONELAP_ENDPOINT);assert.equal(options.credentials,'omit');assert.equal(options.mode,'cors');assert.equal(JSON.parse(options.body).coordinateSystem,'BD09');return Response.json({gpx:'<gpx/>',pointCount:1699});}});
+assert.equal(data.pointCount,1699);
+await assert.rejects(fetchOnelapRoute(url,'BD09',{fetchImpl:async()=>Response.json({error:'limited'},{status:429})}),/一分钟/);
+await assert.rejects(fetchOnelapRoute(url,'BD09',{fetchImpl:async()=>{throw TypeError('network');}}),/GPX/);
+await assert.rejects(fetchOnelapRoute(url,'BD09',{fetchImpl:async()=>Response.json({gpx:'<gpx/>',pointCount:0})}),/有效轨迹/);
+console.log('Passed: two share types, domain validation, credential-free request, throttling, network errors, invalid response.');
