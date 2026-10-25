@@ -1,0 +1,40 @@
+import assert from 'node:assert/strict';
+import {prepareRoute,weatherKind,weatherRouteSections,solarRouteEvents,pointAtDistance} from './core.js';
+import {validateFavorite,exportFavorites,importFavorites,favoriteRoute} from './favorites.js';
+
+assert.deepEqual([0,3,45,48,51,67,82,73,86,95,99,null,undefined,4].map(weatherKind),['sunny','cloudy','fog','fog','rain','rain','rain','snow','snow','thunder','thunder','unknown','unknown','unknown']);
+const route=prepareRoute([[{lat:0,lon:0},{lat:0,lon:1}],[{lat:20,lon:20},{lat:20,lon:21}]]);
+const samples=[route.points[0],route.points.at(-1)],mid=route.km/2;
+const sections=weatherRouteSections(route,samples,[{code:0},{code:61}]);
+assert(sections.some(s=>s.kind==='sunny')&&sections.some(s=>s.kind==='rain'));
+for(const section of sections)assert(section.points.every(p=>p.segment===section.segment),'Weather lines must not bridge disjoint GPX tracks');
+assert(Math.abs(sections[0].points.at(-1).km-mid)<1e-9,'Colour changes at the sample mileage midpoint');
+assert(weatherRouteSections(route,samples,[]).every(s=>s.kind==='unknown'),'Unavailable weather must not look sunny');
+const position=pointAtDistance(route,route.points[2].km+5);
+assert.equal(position.segment,1);assert(position.lon>20&&position.lon<21,'Solar markers interpolate within the actual track');
+
+const day=Date.parse('2026-10-27T00:00:00+08:00')/1000;
+const plan={start:day+5*3600,speed:20,rest:0},stops=[{km:0},{km:20},{km:40}];
+const forecasts=stops.map((s,i)=>({daily:{time:[day],sunrise:[day+6*3600+i*60],sunset:[day+17*3600]}}));
+let events=solarRouteEvents(stops,forecasts,plan,40);
+assert.equal(events.length,1);assert.equal(events[0].type,'sunrise');assert.equal(events[0].phase,'during');
+assert(events[0].km>20&&events[0].km<21,'Account for changing solar time along the route');
+events=solarRouteEvents(stops,forecasts,{...plan,start:day+12*3600},40);assert.equal(events.length,0,'No irrelevant midday solar cards');
+events=solarRouteEvents(stops,forecasts,{...plan,start:day+6*3600+1200},40);assert.equal(events[0].phase,'before');
+events=solarRouteEvents(stops,forecasts,{...plan,start:day+14*3600+2400},40);assert.equal(events[0].phase,'after');
+events=solarRouteEvents(stops,forecasts,{...plan,start:day+16*3600},40);assert.equal(events[0].type,'sunset');assert.equal(events[0].remainingMinutes,60);
+assert.deepEqual(solarRouteEvents(stops,[],plan,40),[]);
+assert.deepEqual(solarRouteEvents(stops,[{daily:{time:[day],sunrise:[null],sunset:[null]}}],plan,40),[]);
+const acrossMidnight=stops.map(()=>({daily:{time:[day,day+86400],sunrise:[day+6*3600,day+30*3600],sunset:[day+17*3600,day+41*3600]}}));
+events=solarRouteEvents(stops,acrossMidnight,{start:day+23*3600,speed:5,rest:0},40);assert.equal(events.length,1);assert.equal(events[0].time,day+30*3600,'Use the correct day for overnight rides');
+
+const favorite={name:'环湖测试',segments:route.segments,preferences:{speed:25,rest:40,spacing:10},sourceUrl:'https://www.onelap.cn/bikeroute/detail.html?id=54848&routeType=route'};
+assert.equal(favoriteRoute(favorite).km,route.km);
+assert.equal(validateFavorite({...favorite,sourceUrl:'javascript:alert(1)'}).sourceUrl,'');
+assert.equal(validateFavorite({...favorite,savedAt:1e99}).savedAt>0,true);
+assert.deepEqual(validateFavorite({...favorite,preferences:{speed:0,rest:-1,spacing:9}}).preferences,{speed:22,rest:30,spacing:20});
+assert.throws(()=>validateFavorite({...favorite,segments:[[{lat:91,lon:0},{lat:0,lon:1}]]}),/无效坐标/);
+await assert.rejects(importFavorites('{'),/无法读取备份/);
+await assert.rejects(importFavorites(JSON.stringify({format:'ride-weather-favorites',version:1,routes:[favorite,{...favorite,segments:[]}]})),/有效路线/);
+const backup=JSON.parse(exportFavorites([favorite]));assert.equal(backup.routes[0].segments.length,2);assert(!('weather' in backup.routes[0]));
+console.log('Passed: weather categories/missing data, exact colour boundaries, disjoint tracks, solar spatial interpolation/proximity/midday/overnight/null cases, favorite validation and full-route backup.');

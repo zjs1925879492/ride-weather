@@ -1,1 +1,1 @@
-{"private":true,"type":"module"}
+{"private":true,"type":"module","scripts":{"dev":"node dev-server.mjs","build":"node build.mjs","check":"node check.mjs && node maps-check.mjs && node onelap-check.mjs && node features-check.mjs && node xingzhe-check.mjs && node services/route-import/check-worker.mjs"}}

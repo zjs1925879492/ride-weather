@@ -1,13 +1,20 @@
-import {fetchOnelapRoute} from './onelap.js?v=onelap1';
+import {fetchOnelapRoute} from './onelap.js?v=release20261026';
+import {fetchXingzheRoute} from './xingzhe.js?v=release20261026';
 import {installBasemaps} from './maps.js?v=tdt1';
 import {SITE_MAP_CONFIG} from './map-config.js?v=tdt1';
-import {prepareRoute,sampleRoute,arrivalEpoch,weatherAt,condition,windName,assess,bearing,headwind} from './core.js';
+import {prepareRoute,sampleRoute,arrivalEpoch,weatherAt,condition,windName,assess,bearing,headwind,WEATHER_STYLES,weatherKind,weatherRouteSections,solarRouteEvents,pointAtDistance} from './core.js?v=release20261026';
+import {listFavorites,saveFavorite,deleteFavorite,favoriteRoute,exportFavorites,importFavorites} from './favorites.js?v=release20261026';
 const $=id=>document.getElementById(id),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let route=null,samples=[],weather=[],places=[],selected=-1,map,lineLayer,markerLayer,markers=[],busy=false,generation=0,basemaps,pendingProvider='tdt';
 const placeCache=new Map(),forecastCache=new Map();
-let importBusy=false,routeDownloadUrl;
-const planControls=['queryBtn','uploadBtn','sampleBtn','file','departure','nowBtn','speed','rest','spacing','importRouteBtn','onelapUrl','routeCoordinates','autoWeather'];
-function setControlsDisabled(disabled){for(const id of planControls)$(id).disabled=disabled;}
+let importBusy=false,routeDownloadUrl,favoriteBusy=false,solarEvents=[],solarLayer,solarMarkers=[],favoriteRecords=[];
+let initialRouteRevision=0,lastDeletedFavorite=null;
+const planControls=['queryBtn','uploadBtn','sampleBtn','file','departure','nowBtn','speed','rest','spacing','importRouteBtn','onelapUrl','routeCoordinates','autoWeather','saveRouteBtn','favoritesBtn'];
+function setControlsDisabled(disabled){
+  const locked=disabled||favoriteBusy;
+  for(const id of planControls)$(id).disabled=locked;
+  for(const el of $('favoritesDialog').querySelectorAll('button:not(.close),input'))el.disabled=locked;
+}
 function clearRouteDownload(){if(routeDownloadUrl)URL.revokeObjectURL(routeDownloadUrl);routeDownloadUrl=null;$('routeDownload').hidden=true;$('routeDownload').removeAttribute('href');}
 function status(text,type=''){$('status').textContent=text;$('status').className=type;}
 function bjt(epoch,full=false){return new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',...(full?{month:'2-digit',day:'2-digit'}:{}),hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(epoch*1000));}
@@ -15,49 +22,170 @@ function nowInput(delta=0){const d=new Date(Date.now()+delta+8*3600000);return d
 $('departure').value=nowInput(86400000).slice(0,10)+'T07:00';
 function params(){const speed=Number($('speed').value),rest=Number($('rest').value),start=Date.parse($('departure').value+'+08:00')/1000;if(!Number.isFinite(start)||!Number.isFinite(speed)||speed<3||speed>80||!Number.isFinite(rest)||rest<0||rest>600)throw Error('请设置有效的出发时间、3–80 km/h 的均速和 0–600 分钟的休息时间。');return {speed,rest,start};}
 function eta(p){const {speed,rest,start}=params();return arrivalEpoch(start,p.km,speed,rest,route.km);}
-function initMap(){if(!window.L){$('map').textContent='地图库加载失败，请刷新页面。路书和天气仍可在下方查看。';return;}map=L.map('map',{zoomControl:false}).setView([31.59,119.76],10);L.control.zoom({position:'topright'}).addTo(map);lineLayer=L.layerGroup().addTo(map);markerLayer=L.layerGroup().addTo(map);basemaps=installBasemaps(L,map,{select:$('mapProvider'),notice:$('mapNotice'),openSettings:$('mapSettingsBtn'),requestKey:id=>{pendingProvider=id==='tdtimg'?'tdtimg':'tdt';$('mapConfigError').textContent='';$('mapConfig').showModal();}},SITE_MAP_CONFIG);}
+function initMap(){if(!window.L){$('map').textContent='地图库加载失败，请刷新页面。路书和天气仍可在下方查看。';return;}map=L.map('map',{zoomControl:false}).setView([31.59,119.76],10);L.control.zoom({position:'topright'}).addTo(map);lineLayer=L.layerGroup().addTo(map);markerLayer=L.layerGroup().addTo(map);solarLayer=L.layerGroup().addTo(map);basemaps=installBasemaps(L,map,{select:$('mapProvider'),notice:$('mapNotice'),openSettings:$('mapSettingsBtn'),requestKey:id=>{pendingProvider=id==='tdtimg'?'tdtimg':'tdt';$('mapConfigError').textContent='';$('mapConfig').showModal();}},SITE_MAP_CONFIG);}
 
 function parseGPX(text,fallback){const xml=new DOMParser().parseFromString(text,'application/xml');if(xml.getElementsByTagName('parsererror').length)throw Error('无法读取 GPX：文件不是有效的 XML。');if(xml.documentElement.localName!=='gpx')throw Error('请选择 GPX 路书文件。');const all=(el,name)=>[...el.getElementsByTagNameNS('*',name)];let containers=all(xml,'trkseg'),tag='trkpt';if(!containers.length){containers=all(xml,'rte');tag='rtept';}if(!containers.length)throw Error('没有找到轨迹点 trkpt 或路线点 rtept。');const segments=containers.map(c=>all(c,tag).map(el=>{const la=el.getAttribute('lat'),lo=el.getAttribute('lon'),lat=la===null||la.trim()===''?NaN:Number(la),lon=lo===null||lo.trim()===''?NaN:Number(lo);if(!Number.isFinite(lat)||!Number.isFinite(lon)||Math.abs(lat)>90||Math.abs(lon)>180)throw Error('GPX 含无效坐标，请检查路书。');return {lat,lon};})).filter(s=>s.length>0);if(segments.reduce((s,a)=>s+a.length,0)>150000)throw Error('轨迹点超过 150,000 个，请先精简路书。');if(segments.flat().length<2)throw Error('路书至少需要两个有效坐标点。');const name=all(xml,'trk').concat(all(xml,'rte')).map(el=>[...el.children].find(c=>c.localName==='name')?.textContent).find(Boolean)||fallback;return {...prepareRoute(segments),name};}
-function resetSummary(){for(const id of ['tempRange','maxRain','maxGust','regionCount'])$(id).textContent='—';$('regionsText').textContent='查询后识别城市与区县';$('updated').textContent='选择出发时间，开始查询';}
-function setRoute(r,source){clearRouteDownload();$('importStatus').textContent='';$('mapState').textContent='沿途天气待查询';route=r;generation++;weather=[];places=[];selected=-1;resetSummary();$('routeName').textContent=r.name;$('routeSource').textContent=source;$('distance').textContent=r.km.toFixed(2);updateSamples();drawRoute();status('路线已准备好。点击“查询沿途天气”，获取真实预报。');}
+function resetSummary(){solarEvents=[];solarLayer?.clearLayers();for(const id of ['tempRange','maxRain','maxGust','regionCount'])$(id).textContent='—';$('regionsText').textContent='查询后识别城市与区县';$('updated').textContent='选择出发时间，开始查询';}
+function setRoute(r,source){initialRouteRevision++;clearRouteDownload();$('importStatus').textContent='';$('mapState').textContent='沿途天气待查询';route=r;generation++;weather=[];places=[];selected=-1;resetSummary();$('routeName').textContent=r.name;$('routeSource').textContent=source;$('distance').textContent=r.km.toFixed(2);updateSamples();drawRoute(true);status('路线已准备好。点击“查询沿途天气”，获取真实预报。');}
 function updateSamples(){if(!route)return;samples=sampleRoute(route,Number($('spacing').value));$('sampleCount').textContent=samples.length+' 个';try{const p=params();const hours=route.km/p.speed+p.rest/60;$('duration').textContent=Math.floor(hours)+' 小时 '+Math.round(hours%1*60)+' 分';}catch{$('duration').textContent='检查计划';}$('sampleNote').textContent=`约每 ${Math.max(Number($('spacing').value),route.km/17).toFixed(0)} 公里采样 · 最多 18 点`;drawMarkers();renderRows();}
-function drawRoute(){if(!map)return;lineLayer.clearLayers();route.segments.forEach(seg=>{L.polyline(seg.map(p=>[p.lat,p.lon]),{color:'#fff',weight:8,opacity:.9}).addTo(lineLayer);L.polyline(seg.map(p=>[p.lat,p.lon]),{color:'#df7850',weight:4,opacity:1}).addTo(lineLayer);});fit();drawMarkers();}
+function drawRoute(fitView=false){
+  renderLegend();if(!map||!route)return;
+  lineLayer.clearLayers();
+  for(const section of weatherRouteSections(route,samples,weather)){
+    const style=WEATHER_STYLES[section.kind],coords=section.points.map(p=>[p.lat,p.lon]);
+    L.polyline(coords,{color:section.kind==='fog'?'#48565c':'#ffffff',weight:9,opacity:.95,interactive:false}).addTo(lineLayer);
+    const line=L.polyline(coords,{color:style.color,weight:5,opacity:1,dashArray:section.kind==='unknown'?'8 6':undefined}).addTo(lineLayer);
+    const index=section.sampleIndex,w=weather[index],[symbol,desc]=condition(w?.code);
+    line.bindTooltip(`${symbol} ${w?desc:'天气待查询 / 暂缺'} · ${section.points[0].km.toFixed(1)}–${section.points.at(-1).km.toFixed(1)} km`);
+    line.on('click',()=>select(index,true));
+  }
+  renderSolarMarkers();if(fitView)fit();drawMarkers();
+}
+function renderLegend(){
+  const kinds=route?[...new Set(weatherRouteSections(route,samples,weather).map(s=>s.kind))]:['unknown'];
+  $('routeLegend').innerHTML=kinds.map(kind=>{const style=WEATHER_STYLES[kind];return `<span class="legend-item"><i class="weather-swatch ${kind}"></i>${style.label}</span>`;}).join('');
+  $('weatherMapNote').textContent=weather.some(Boolean)?'按预计经过时刻的采样预报分段，颜色边界为概略位置。点击路线查看天气。':'查询天气后显示晴、阴、雨、雾等路线颜色。';
+}
+function solarDescription(event){
+  const title=event.type==='sunrise'?'日出':'日落';
+  if(event.phase==='before')return `出发前约 ${Math.round((params().start-event.time)/60)} 分钟${title}`;
+  if(event.phase==='after')return `预计结束后约 ${Math.round((event.time-eta(route.points.at(-1)))/60)} 分钟${title}`;
+  return `预计骑至约 ${event.km.toFixed(1)} 公里时${title}`;
+}
+function renderSolarMarkers(){
+  if(!map||!solarLayer)return;solarLayer.clearLayers();
+  solarMarkers=solarEvents.map((event,index)=>{
+    const p=pointAtDistance(route,event.km),title=event.type==='sunrise'?'日出':'日落';
+    const icon=L.divIcon({className:`sun-marker ${event.type}`,html:event.type==='sunrise'?'☀↑':'☀↓',iconSize:[34,28],iconAnchor:[17,14]});
+    return L.marker([p.lat,p.lon],{icon,title:`${title} ${bjt(event.time)}`,zIndexOffset:500}).addTo(solarLayer).bindPopup(`<b>${title} · ${bjt(event.time,true)}</b><br>${solarDescription(event)}`).on('click',()=>selectSolar(index,true));
+  });
+}
+function selectSolar(index,scroll=false){
+  const event=solarEvents[index];if(!event)return;
+  const p=pointAtDistance(route,event.km);if(map){map.panTo([p.lat,p.lon]);solarMarkers[index]?.openPopup();}
+  if(scroll)$('solar-'+index)?.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+
 function fit(){if(map&&route)map.fitBounds(L.latLngBounds(route.points.map(p=>[p.lat,p.lon])),{padding:[45,60]});}
 function label(i){return places[i]?.label||`${i===0?'起点':i===samples.length-1?'终点':'采样点 '+(i+1)}`;}
 function drawMarkers(){if(!map||!route)return;markerLayer.clearLayers();markers=samples.map((p,i)=>{const w=weather[i],risk=assess(w);const icon=L.divIcon({className:`stop-icon ${risk} ${selected===i?'selected':''}`,html:String(i+1),iconSize:[24,24],iconAnchor:[12,12]});const marker=L.marker([p.lat,p.lon],{icon,title:label(i)}).addTo(markerLayer);marker.on('click',()=>select(i,true));const [symbol,desc]=condition(w?.code);marker.bindPopup(`<b>${esc(label(i))}</b><br>${p.km.toFixed(1)} km · 预计 ${bjt(eta(p),true)}<br>${w?`${symbol} ${desc} ${w.temp??'—'}°C`:'天气待查询'}`);return marker;});}
 function select(i,scroll=false){selected=i;renderRows();drawMarkers();if(map){map.panTo([samples[i].lat,samples[i].lon]);markers[i]?.openPopup();}if(scroll)$('stop-'+i)?.scrollIntoView({behavior:'smooth',block:'nearest'});}
 function headingAt(p){const pts=route.points;let i=pts.findIndex(a=>a.km>=p.km&&a.segment===p.segment);if(i<0)i=pts.length-1;for(let j=i+1;j<pts.length&&pts[j].segment===p.segment;j++)if(pts[j].km-pts[i].km>.03)return bearing(pts[i],pts[j]);for(let j=i-1;j>=0&&pts[j].segment===p.segment;j--)if(pts[i].km-pts[j].km>.03)return bearing(pts[j],pts[i]);return null;}
-function renderRows(){$('empty').hidden=!!route;if(!route)return;let p;try{p=params();}catch{$('timeline').innerHTML='';return;}$('timeline').innerHTML=samples.map((s,i)=>{const w=weather[i],risk=assess(w),[symbol,desc]=condition(w?.code),h=headingAt(s),head=w&&h!==null&&w.direction!==null&&w.wind!==null?headwind(w.wind,w.direction,h):null;const windDetail=head===null?'':` · ${head>=0?'迎风':'顺风'}分量 ${Math.abs(head).toFixed(0)} km/h`;const riskLabel=!w?(busy?'查询中':'待查询'):risk==='high'?'留意天气':risk==='care'?'留意风雨':'常规天气';return `<button class="weather-row ${selected===i?'active':''}" id="stop-${i}" data-index="${i}" aria-label="查看${esc(label(i))}的地图位置"><div class="km">${s.km.toFixed(1)}<small>${i===0?'START':i===samples.length-1?'FINISH':'KM / '+String(i+1).padStart(2,'0')}</small></div><div class="place"><b>${esc(label(i))}</b><small>预计 ${bjt(arrivalEpoch(p.start,s.km,p.speed,p.rest,route.km),true)}${places[i]?.detail?' · '+esc(places[i].detail):''}</small></div><div class="metric condition-metric"><b><span class="weather-symbol">${symbol}</span>${w?.temp??'—'}°C</b><small>${w?desc:'查询后显示'}${w?.feels!==null&&w?.feels!==undefined?' · 体感 '+w.feels+'°':''}</small></div><div class="metric rain-metric"><b>${w?.rain??'—'}<span>%</span></b><small>降雨概率 · ${w?.amount??'—'} mm</small></div><div class="metric wind-metric"><b>${w?.wind??'—'} km/h · ${windName(w?.direction??null)}</b><small>阵风 ${w?.gust??'—'} km/h${windDetail}</small></div><div class="risk-metric"><span class="risk-tag ${risk}">${riskLabel}</span></div></button>`;}).join('');$('timeline').querySelectorAll('[data-index]').forEach(el=>el.onclick=()=>select(Number(el.dataset.index)));}
+function renderRows(){
+  $('empty').hidden=!!route;if(!route)return;
+  let p;try{p=params();}catch{$('timeline').innerHTML='';return;}
+  const entries=samples.map((s,i)=>({km:s.km,order:0,html:weatherRow(s,i,p)}));
+  solarEvents.forEach((event,i)=>{
+    const title=event.type==='sunrise'?'日出':'日落';
+    const minutes=event.remainingMinutes,duration=minutes>=60?`${Math.floor(minutes/60)} 小时${minutes%60?' '+minutes%60+' 分钟':''}`:`${minutes} 分钟`;
+    let note=event.type==='sunset'&&event.phase==='during'?`日落后预计仍有 ${duration} 行程，建议准备车灯。`:'按沿途位置估算天文日出日落；实际光照受天气与地形影响。';
+    if(event.type==='sunrise'&&event.phase==='during')note='日出前的路段需要照明，建议准备车灯。';
+    if(event.type==='sunset'&&event.phase==='before')note='出发时已在日落后，建议准备车灯。';
+    if(event.type==='sunset'&&event.phase==='after')note='预计结束时间接近日落，建议预留行程余量。';
+    entries.push({km:event.km,order:event.phase==='before'?-1:1,html:`<button class="solar-event ${event.type}" id="solar-${i}" data-solar="${i}" aria-label="在地图查看${title}位置"><span class="solar-symbol">${event.type==='sunrise'?'☀↑':'☀↓'}</span><span><b>${title} · ${bjt(event.time,true)}</b><span>${solarDescription(event)}</span><small>${note}</small></span><span class="solar-map-link">地图定位 ↗</span></button>`});
+  });
+  $('timeline').innerHTML=entries.sort((a,b)=>a.km-b.km||a.order-b.order).map(e=>e.html).join('');
+  $('timeline').querySelectorAll('[data-index]').forEach(el=>el.onclick=()=>select(Number(el.dataset.index)));
+  $('timeline').querySelectorAll('[data-solar]').forEach(el=>el.onclick=()=>selectSolar(Number(el.dataset.solar)));
+}
+function weatherRow(s,i,p){
+  const w=weather[i],kind=weatherKind(w?.code),risk=assess(w),[symbol,desc]=condition(w?.code),h=headingAt(s),head=w&&h!==null&&w.direction!==null&&w.wind!==null?headwind(w.wind,w.direction,h):null;
+  const windDetail=head===null?'':` · ${head>=0?'迎风':'顺风'}分量 ${Math.abs(head).toFixed(0)} km/h`;
+  const riskLabel=!w?(busy?'查询中':'待查询'):risk==='high'?'留意天气':risk==='care'?'留意风雨':'常规天气';
+  return `<button class="weather-row ${selected===i?'active':''}" id="stop-${i}" data-index="${i}" aria-label="查看${esc(label(i))}的地图位置"><div class="km">${s.km.toFixed(1)}<small>${i===0?'START':i===samples.length-1?'FINISH':'KM / '+String(i+1).padStart(2,'0')}</small></div><div class="place"><b>${esc(label(i))}</b><small>预计 ${bjt(arrivalEpoch(p.start,s.km,p.speed,p.rest,route.km),true)}${places[i]?.detail?' · '+esc(places[i].detail):''}</small></div><div class="metric condition-metric"><b><span class="weather-symbol weather-${kind}">${symbol}</span>${w?.temp??'—'}°C</b><small>${w?desc:'查询后显示'}${w?.feels!==null&&w?.feels!==undefined?' · 体感 '+w.feels+'°':''}</small></div><div class="metric rain-metric"><b>${w?.rain??'—'}<span>%</span></b><small>降雨概率 · ${w?.amount??'—'} mm</small></div><div class="metric wind-metric"><b>${w?.wind??'—'} km/h · ${windName(w?.direction??null)}</b><small>阵风 ${w?.gust??'—'} km/h${windDetail}</small></div><div class="risk-metric"><span class="risk-tag ${risk}">${riskLabel}</span></div></button>`;
+}
+
 async function fetchJSON(url,signal){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),25000);const abort=()=>controller.abort();signal?.addEventListener('abort',abort);try{const r=await fetch(url,{signal:controller.signal});if(!r.ok)throw Error(`服务返回 ${r.status}`);return await r.json();}finally{clearTimeout(timer);signal?.removeEventListener('abort',abort);}}
 function formatPlace(data){const p=data.features?.[0]?.properties;if(!p)return null;const region=[p.state,p.city||p.county,p.district].filter(Boolean);const nearby=p.locality||p.name||'';return {label:region.length?[...new Set(region)].join(' · '):nearby||p.country||'未知区域',detail:nearby,region:[p.city||p.county,p.district].filter(Boolean).join(' · ')||p.state||p.country||nearby};}
 let activeController;
-async function query(){if(!route||busy||importBusy)return;let plan;try{plan=params();}catch(e){status(e.message,'error');return;}const now=Date.now()/1000;if(plan.start<now-3600||eta(samples.at(-1))>now+15*86400){status('请将整次骑行安排在未来 15 天内。此版本查询天气预报，不提供历史天气。','error');return;}const gen=++generation;activeController?.abort();activeController=new AbortController();const signal=activeController.signal;busy=true;document.body.classList.add('busy');setControlsDisabled(true);weather=[];places=[];resetSummary();renderRows();status('正在获取各采样点的逐小时天气…','loading');$('mapState').textContent='正在查询沿途天气';let weatherError=null,locationFailures=0;try{
-try{const coordinates=samples.map(p=>[p.lat.toFixed(5),p.lon.toFixed(5)]);const key=JSON.stringify(coordinates);let data=forecastCache.get(key);if(!data||Date.now()-data.at>600000){const url=new URL('https://api.open-meteo.com/v1/forecast');url.search=new URLSearchParams({latitude:coordinates.map(p=>p[0]).join(','),longitude:coordinates.map(p=>p[1]).join(','),hourly:'temperature_2m,apparent_temperature,precipitation_probability,precipitation,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m',forecast_days:'16',timezone:'UTC',timeformat:'unixtime',wind_speed_unit:'kmh'});const raw=await fetchJSON(url,signal);data={at:Date.now(),items:Array.isArray(raw)?raw:[raw]};if(data.items.length!==samples.length||data.items.some(x=>!x.hourly))throw Error('天气服务没有返回完整的采样点数据。');forecastCache.set(key,data);}if(gen!==generation)return;weather=data.items.map((d,i)=>weatherAt(d,eta(samples[i])));updateSummary();renderRows();drawMarkers();$('updated').textContent='天气获取于 '+bjt(data.at/1000,true)+' · 北京时间';}catch(e){weatherError=e;status('天气查询失败：'+(e.name==='AbortError'?'请求超时':e.message)+'。继续识别沿途区域…','error');}
+async function query(){if(!route||busy||importBusy||favoriteBusy)return;let plan;try{plan=params();}catch(e){status(e.message,'error');return;}const now=Date.now()/1000;if(plan.start<now-3600||eta(samples.at(-1))>now+15*86400){status('请将整次骑行安排在未来 15 天内。此版本查询天气预报，不提供历史天气。','error');return;}const gen=++generation;activeController?.abort();activeController=new AbortController();const signal=activeController.signal;busy=true;document.body.classList.add('busy');setControlsDisabled(true);weather=[];places=[];resetSummary();drawRoute();renderRows();status('正在获取各采样点的逐小时天气…','loading');$('mapState').textContent='正在查询沿途天气';let weatherError=null,locationFailures=0;try{
+try{const coordinates=samples.map(p=>[p.lat.toFixed(5),p.lon.toFixed(5)]);const key=JSON.stringify(coordinates);let data=forecastCache.get(key);if(!data||Date.now()-data.at>600000){const url=new URL('https://api.open-meteo.com/v1/forecast');url.search=new URLSearchParams({latitude:coordinates.map(p=>p[0]).join(','),longitude:coordinates.map(p=>p[1]).join(','),hourly:'temperature_2m,apparent_temperature,precipitation_probability,precipitation,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m',daily:'sunrise,sunset',forecast_days:'16',timezone:'UTC',timeformat:'unixtime',wind_speed_unit:'kmh'});const raw=await fetchJSON(url,signal);data={at:Date.now(),items:Array.isArray(raw)?raw:[raw]};if(data.items.length!==samples.length||data.items.some(x=>!x.hourly))throw Error('天气服务没有返回完整的采样点数据。');forecastCache.set(key,data);}if(gen!==generation)return;weather=data.items.map((d,i)=>weatherAt(d,eta(samples[i])));solarEvents=solarRouteEvents(samples,data.items,plan,route.km);drawRoute();updateSummary();renderRows();drawMarkers();$('updated').textContent='天气获取于 '+bjt(data.at/1000,true)+' · 北京时间';}catch(e){weatherError=e;status('天气查询失败：'+(e.name==='AbortError'?'请求超时':e.message)+'。继续识别沿途区域…','error');}
 for(let i=0;i<samples.length;i++){if(gen!==generation||signal.aborted)break;const s=samples[i],key=s.lat.toFixed(4)+','+s.lon.toFixed(4);try{if(placeCache.has(key))places[i]=placeCache.get(key);else{status(`${weatherError?'天气暂不可用；':''}正在识别沿途区域 ${i+1} / ${samples.length}…`,'loading');const data=await fetchJSON(`https://photon.komoot.io/reverse?lat=${s.lat.toFixed(6)}&lon=${s.lon.toFixed(6)}&radius=5`,signal);places[i]=formatPlace(data);if(places[i])placeCache.set(key,places[i]);await new Promise(r=>setTimeout(r,450));}if(!places[i])locationFailures++;}catch{locationFailures++;}renderRows();updateSummary();}
 }finally{busy=false;document.body.classList.remove('busy');setControlsDisabled(false);renderRows();drawMarkers();const count=weather.filter(Boolean).length;const issues=[];if(weatherError)issues.push('天气获取失败，请检查网络后重试');else if(count<samples.length)issues.push(`${samples.length-count} 个点的到达时间超出可用预报或缺少数据`);if(locationFailures)issues.push(`${locationFailures} 个点未能识别地名`);status(issues.length?issues.join('；')+'。':`已匹配 ${count} 个采样点的到达时天气。点击卡片可定位地图。`,issues.length?'error':'');$('mapState').textContent=count?`${count} 个点已匹配天气`:'天气未取得，可重试';}}
 function updateSummary(){const valid=weather.filter(Boolean),vals=k=>valid.map(w=>w[k]).filter(Number.isFinite);const temp=vals('temp'),rain=vals('rain'),gust=vals('gust');$('tempRange').innerHTML=temp.length?`${Math.min(...temp).toFixed(0)}–${Math.max(...temp).toFixed(0)}<em>°C</em>`:'—';$('maxRain').innerHTML=rain.length?`${Math.max(...rain).toFixed(0)}<em>%</em>`:'—';$('maxGust').innerHTML=gust.length?`${Math.max(...gust).toFixed(0)}<em>km/h</em>`:'—';const regions=[...new Set(places.filter(Boolean).map(p=>p.region))];$('regionCount').innerHTML=regions.length?`${regions.length}<em>个区域</em>`:'—';$('regionsText').textContent=regions.length?regions.join(' / '):'地名尚未取得';}
-async function loadFile(file){if(busy||importBusy)return;try{if(file.size>15*1024*1024)throw Error('文件超过 15 MB，请先精简路书。');const r=parseGPX(await file.text(),file.name.replace(/\.gpx$/i,''));setRoute(r,'本地导入 · '+r.points.length.toLocaleString()+' 个点');}catch(e){status(e.message,'error');}}
-async function sample(){if(busy||importBusy)return;const gen=generation;try{const r=await fetch('./assets/sample.gpx');if(!r.ok)throw Error('示例文件读取失败');const text=await r.text();if(importBusy||generation!==gen)return;setRoute(parseGPX(text,'河海出发环滆湖'),'顽鹿示例 · 2,352 个点');}catch(e){status(e.message,'error');}}
+async function loadFile(file){if(busy||importBusy||favoriteBusy)return;try{if(file.size>15*1024*1024)throw Error('文件超过 15 MB，请先精简路书。');const r=parseGPX(await file.text(),file.name.replace(/\.gpx$/i,''));setRoute(r,'本地导入 · '+r.points.length.toLocaleString()+' 个点');}catch(e){status(e.message,'error');}}
+async function sample(){if(busy||importBusy||favoriteBusy)return;const gen=generation,revision=initialRouteRevision;try{const r=await fetch('./assets/sample.gpx');if(!r.ok)throw Error('示例文件读取失败');const text=await r.text();if(importBusy||favoriteBusy||generation!==gen||initialRouteRevision!==revision)return;setRoute(parseGPX(text,'河海出发环滆湖'),'顽鹿示例 · 2,352 个点');}catch(e){status(e.message,'error');}}
 $('uploadBtn').onclick=()=>$('file').click();$('file').onchange=e=>{if(e.target.files[0])loadFile(e.target.files[0]);e.target.value='';};$('sampleBtn').onclick=sample;$('queryBtn').onclick=query;$('fitBtn').onclick=fit;$('aboutBtn').onclick=()=>$('about').showModal();$('closeAbout').onclick=()=>$('about').close();$('about').onclick=e=>{if(e.target===$('about'))$('about').close();};
-$('nowBtn').onclick=()=>{if(busy||importBusy)return;$('departure').value=nowInput();$('departure').dispatchEvent(new Event('change',{bubbles:true}));};
-for(const id of ['departure','speed','rest','spacing'])$(id).addEventListener('change',()=>{weather=[];places=[];selected=-1;generation++;resetSummary();updateSamples();status('计划已更新，请重新查询对应时间的天气。');$('mapState').textContent='计划已更新，天气待查询';});
+$('nowBtn').onclick=()=>{if(busy||importBusy||favoriteBusy)return;$('departure').value=nowInput();$('departure').dispatchEvent(new Event('change',{bubbles:true}));};
+for(const id of ['departure','speed','rest','spacing'])$(id).addEventListener('change',()=>{weather=[];places=[];selected=-1;generation++;resetSummary();updateSamples();drawRoute();status('计划已更新，请重新查询对应时间的天气。');$('mapState').textContent='计划已更新，天气待查询';});
 let dragDepth=0;document.addEventListener('dragover',e=>{e.preventDefault();});document.addEventListener('dragenter',e=>{if(e.dataTransfer?.types.includes('Files')){e.preventDefault();dragDepth++;document.body.classList.add('dragging');}});document.addEventListener('dragleave',()=>{if(--dragDepth<=0)document.body.classList.remove('dragging');});document.addEventListener('drop',e=>{e.preventDefault();dragDepth=0;document.body.classList.remove('dragging');if(e.dataTransfer?.files[0])loadFile(e.dataTransfer.files[0]);});
 $('closeMapConfig').onclick=()=>$('mapConfig').close();
 $('saveMapKey').onclick=()=>{if(basemaps?.setKey($('tdtKey').value,pendingProvider)){$('mapConfig').close();$('tdtKey').value='';}else $('mapConfigError').textContent='Key 格式无效，请填写你申请的天地图浏览器端 Key。';};
 $('clearMapKey').onclick=()=>{basemaps?.clearKey();$('tdtKey').value='';$('mapConfig').close();};
 initMap();sample();
 
+function sharePlatform(value){
+ let url;try{url=new URL(value.trim());}catch{throw Error('请粘贴完整的顽鹿或行者分享链接。');}
+ if(['www.imxingzhe.com','imxingzhe.com'].includes(url.hostname))return 'xingzhe';
+ if(['www.onelap.cn','onelap.cn'].includes(url.hostname))return 'onelap';
+ throw Error('目前支持顽鹿 onelap.cn 和行者 imxingzhe.com 分享链接。');
+}
+$('onelapUrl').addEventListener('input',()=>{
+ let platform;try{platform=sharePlatform($('onelapUrl').value);}catch{}
+ $('onelapCoordinateOptions').hidden=platform==='xingzhe';
+ $('importRouteBtn').textContent=platform==='xingzhe'?'导入行者路书 ↗':platform==='onelap'?'导入顽鹿路书 ↗':'导入路书 ↗';
+});
 $('linkImportForm').onsubmit=async event=>{
- event.preventDefault();if(busy||importBusy)return;
+ event.preventDefault();if(busy||importBusy||favoriteBusy)return;
  const url=$('onelapUrl').value.trim(),coordinates=$('routeCoordinates').value,auto=$('autoWeather').checked;
- importBusy=true;generation++;setControlsDisabled(true);$('importStatus').className='';$('importStatus').textContent='正在获取顽鹿路书并转换轨迹…';
+ importBusy=true;generation++;setControlsDisabled(true);$('importStatus').className='';$('importStatus').textContent='正在获取分享路书…';
  let imported=false;
- try{const data=await fetchOnelapRoute(url,coordinates);const parsed=parseGPX(data.gpx,data.name||'顽鹿路书');if(parsed.points.length!==data.pointCount)throw Error('转换结果的轨迹点数不一致，未替换当前路书。');
- setRoute(parsed,`${data.sourceType==='route'?'顽鹿公开路书':'顽鹿分享路线'} · ${data.pointCount.toLocaleString()} 个点`);
- routeDownloadUrl=URL.createObjectURL(new Blob([data.gpx],{type:'application/gpx+xml;charset=utf-8'}));$('routeDownload').href=routeDownloadUrl;$('routeDownload').download=data.filename||'顽鹿路书.gpx';$('routeDownload').hidden=false;
+ try{
+ const platform=sharePlatform(url),local=['127.0.0.1','localhost'].includes(location.hostname)&&location.port==='8765';
+ $('importStatus').textContent=platform==='xingzhe'?'正在获取行者公开轨迹…':'正在获取顽鹿路书并转换轨迹…';
+ const data=platform==='xingzhe'?await fetchXingzheRoute(url,local?{endpoint:'/api/import/xingzhe'}:undefined):await fetchOnelapRoute(url,coordinates,local?{endpoint:'/api/import/onelap'}:undefined);
+ const parsed=parseGPX(data.gpx,data.name||'分享路书');if(parsed.points.length!==data.pointCount)throw Error('转换结果的轨迹点数不一致，未替换当前路书。');
+ parsed.sourceUrl=data.sourceUrl||url;setRoute(parsed,`${platform==='xingzhe'?'行者公开路书':data.sourceType==='route'?'顽鹿公开路书':'顽鹿分享路线'} · ${data.pointCount.toLocaleString()} 个点`);
+ routeDownloadUrl=URL.createObjectURL(new Blob([data.gpx],{type:'application/gpx+xml;charset=utf-8'}));$('routeDownload').href=routeDownloadUrl;$('routeDownload').download=data.filename||'分享路书.gpx';$('routeDownload').hidden=false;
  $('importStatus').textContent=`已导入 ${data.pointCount.toLocaleString()} 个轨迹点。${data.coordinateNote||''}`;imported=true;
  }catch(e){$('importStatus').className='error';$('importStatus').textContent=e.message;}
  finally{importBusy=false;setControlsDisabled(false);}
  if(imported&&auto)await query();
 };
 window.addEventListener('pagehide',()=>{if(routeDownloadUrl)URL.revokeObjectURL(routeDownloadUrl);});
+
+function favoritesMessage(text,error=false){$('favoritesStatus').textContent=text;$('favoritesStatus').className=error?'error':'';}
+async function refreshFavorites(){
+  favoriteRecords=await listFavorites();$('favoritesBtn').textContent=`我的收藏 · ${favoriteRecords.length}`;
+  $('favoriteList').innerHTML=favoriteRecords.length?favoriteRecords.map(record=>`<article class="favorite-item"><div><b>${esc(record.name)}</b><small>${record.km.toFixed(2)} 公里 · ${new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',dateStyle:'medium'}).format(record.savedAt)} 收藏</small></div><div class="favorite-item-actions"><button type="button" data-load="${record.id}">载入路线 ↗</button><button type="button" class="favorite-delete" data-delete="${record.id}">删除</button></div></article>`).join(''):'<p class="favorites-empty">还没有收藏。把常骑的路线留在这里，下次直接出发。</p>';
+  $('exportFavoritesBtn').disabled=!favoriteRecords.length;
+  $('favoriteList').querySelectorAll('[data-load]').forEach(button=>button.onclick=()=>favoriteTask(async()=>{
+    const record=favoriteRecords.find(r=>r.id===button.dataset.load);if(!record)return;
+    const restored=favoriteRoute(record);$('speed').value=record.preferences.speed;$('rest').value=record.preferences.rest;$('spacing').value=record.preferences.spacing;
+    setRoute(restored,'本机收藏 · '+restored.points.length.toLocaleString()+' 个点');$('favoritesDialog').close();status('已载入本机收藏，保留当前出发日期。请查询这次行程的最新天气。');
+  }));
+  $('favoriteList').querySelectorAll('[data-delete]').forEach(button=>button.onclick=()=>favoriteTask(async()=>{
+    const record=favoriteRecords.find(r=>r.id===button.dataset.delete);await deleteFavorite(button.dataset.delete);lastDeletedFavorite=record;await refreshFavorites();favoritesMessage('已删除这条本机收藏，可撤销本次删除。');$('undoFavoriteBtn').hidden=false;
+  }));
+}
+async function favoriteTask(action){
+  if(busy||importBusy||favoriteBusy)return;
+  favoriteBusy=true;setControlsDisabled(true);
+  try{await action();}catch(error){favoritesMessage(error.message,true);}
+  finally{favoriteBusy=false;setControlsDisabled(false);$('exportFavoritesBtn').disabled=!favoriteRecords.length;}
+}
+async function openFavorites(){
+  if(busy||importBusy||favoriteBusy)return;
+  $('favoriteName').value=(route?.name||'').slice(0,120);$('favoritesDialog').showModal();favoritesMessage('');
+  await favoriteTask(refreshFavorites);
+}
+$('saveRouteBtn').onclick=openFavorites;$('favoritesBtn').onclick=openFavorites;
+$('closeFavorites').onclick=()=>$('favoritesDialog').close();
+$('favoritesDialog').onclick=event=>{if(event.target===$('favoritesDialog'))$('favoritesDialog').close();};
+$('favoriteForm').onsubmit=event=>{event.preventDefault();favoriteTask(async()=>{
+  if(!route)throw Error('请先导入路线。');const plan=params();
+  await saveFavorite({name:$('favoriteName').value,segments:route.segments,sourceUrl:route.sourceUrl||'',preferences:{speed:plan.speed,rest:plan.rest,spacing:Number($('spacing').value)}});
+  await refreshFavorites();favoritesMessage('已保存到本机。重复保存同一轨迹会更新名称与骑行设置。');
+});};
+function downloadText(text,name,type){const url=URL.createObjectURL(new Blob([text],{type})),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),5000);}
+$('exportFavoritesBtn').onclick=()=>favoriteTask(async()=>{
+  const records=await listFavorites();if(!records.length)throw Error('暂无可导出的收藏。');
+  downloadText(exportFavorites(records),'沿途-本机收藏-'+nowInput().slice(0,10)+'.json','application/json;charset=utf-8');favoritesMessage('已导出完整路线与骑行设置，可在其他浏览器导入。');
+});
+$('importFavoritesBtn').onclick=()=>$('favoriteBackupFile').click();
+$('undoFavoriteBtn').onclick=()=>favoriteTask(async()=>{if(!lastDeletedFavorite)return;await saveFavorite(lastDeletedFavorite);lastDeletedFavorite=null;$('undoFavoriteBtn').hidden=true;await refreshFavorites();favoritesMessage('已恢复这条收藏。');});
+$('favoriteBackupFile').onchange=event=>{
+  const file=event.target.files[0];event.target.value='';if(!file)return;
+  favoriteTask(async()=>{const added=await importFavorites(await file.text());await refreshFavorites();favoritesMessage(`已新增 ${added} 条路线；相同轨迹已跳过，现有收藏不会被覆盖。`);});
+};
+refreshFavorites().catch(()=>{$('favoritesBtn').textContent='我的收藏';});

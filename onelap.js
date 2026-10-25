@@ -13,12 +13,12 @@ async function readJSON(response){
   catch(e){await reader.cancel().catch(()=>{});throw e;}finally{reader.releaseLock();}
   try{return JSON.parse(text);}catch{throw Error('转换服务没有返回有效数据，请稍后重试。');}
 }
-export async function fetchOnelapRoute(value,coordinateSystem='BD09',{fetchImpl=fetch,timeoutMs=30000}={}){
+export async function fetchOnelapRoute(value,coordinateSystem='BD09',{fetchImpl=fetch,timeoutMs=30000,endpoint=ONELAP_ENDPOINT}={}){
   const url=validateOnelapLink(value);
   if(!['BD09','GCJ02','WGS84'].includes(coordinateSystem))throw Error('请选择有效的源坐标类型。');
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeoutMs);
   try{
-    let response;try{response=await fetchImpl(ONELAP_ENDPOINT,{method:'POST',mode:'cors',credentials:'omit',headers:{'Content-Type':'application/json'},body:JSON.stringify({url,coordinateSystem}),signal:controller.signal});}
+    let response;try{response=await fetchImpl(endpoint,{method:'POST',mode:'cors',credentials:'omit',headers:{'Content-Type':'application/json'},body:JSON.stringify({url,coordinateSystem}),signal:controller.signal});}
     catch(e){if(controller.signal.aborted)throw Error('顽鹿导入超时，请稍后重试。');throw Error('无法连接顽鹿转换服务，请检查网络，或改用 GPX 文件导入。');}
     const data=await readJSON(response);
     if(!response.ok)throw Error(response.status===429?'导入次数较多，请一分钟后再试。':data.error||`转换服务返回 ${response.status}，请稍后重试。`);
