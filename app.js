@@ -1,5 +1,6 @@
 import {fetchOnelapRoute} from './onelap.js?v=release20261026';
 import {fetchXingzheRoute} from './xingzhe.js?v=release20261026';
+import {fetchIgpsportRoute} from './igpsport.js?v=igpsport20261026';
 import {installBasemaps} from './maps.js?v=tdt1';
 import {SITE_MAP_CONFIG} from './map-config.js?v=tdt1';
 import {prepareRoute,sampleRoute,arrivalEpoch,weatherAt,condition,windName,assess,bearing,headwind,WEATHER_STYLES,weatherKind,weatherRouteSections,solarRouteEvents,pointAtDistance} from './core.js?v=release20261026';
@@ -115,15 +116,16 @@ $('clearMapKey').onclick=()=>{basemaps?.clearKey();$('tdtKey').value='';$('mapCo
 initMap();sample();
 
 function sharePlatform(value){
- let url;try{url=new URL(value.trim());}catch{throw Error('请粘贴完整的顽鹿或行者分享链接。');}
+ let url;try{url=new URL(value.trim());}catch{throw Error('请粘贴完整的顽鹿、行者或 iGPSPORT 分享链接。');}
  if(['www.imxingzhe.com','imxingzhe.com'].includes(url.hostname))return 'xingzhe';
  if(['www.onelap.cn','onelap.cn'].includes(url.hostname))return 'onelap';
- throw Error('目前支持顽鹿 onelap.cn 和行者 imxingzhe.com 分享链接。');
+ if(url.hostname==='analyse.zh.igpsport.com')return 'igpsport';
+ throw Error('支持顽鹿、行者和 iGPSPORT 国内站的公开路书分享链接。');
 }
 $('onelapUrl').addEventListener('input',()=>{
  let platform;try{platform=sharePlatform($('onelapUrl').value);}catch{}
- $('onelapCoordinateOptions').hidden=platform==='xingzhe';
- $('importRouteBtn').textContent=platform==='xingzhe'?'导入行者路书 ↗':platform==='onelap'?'导入顽鹿路书 ↗':'导入路书 ↗';
+ $('onelapCoordinateOptions').hidden=platform==='xingzhe'||platform==='igpsport';
+ $('importRouteBtn').textContent=platform==='igpsport'?'导入 iGPSPORT 路书 ↗':platform==='xingzhe'?'导入行者路书 ↗':platform==='onelap'?'导入顽鹿路书 ↗':'导入路书 ↗';
 });
 $('linkImportForm').onsubmit=async event=>{
  event.preventDefault();if(busy||importBusy||favoriteBusy)return;
@@ -132,10 +134,10 @@ $('linkImportForm').onsubmit=async event=>{
  let imported=false;
  try{
  const platform=sharePlatform(url),local=['127.0.0.1','localhost'].includes(location.hostname)&&location.port==='8765';
- $('importStatus').textContent=platform==='xingzhe'?'正在获取行者公开轨迹…':'正在获取顽鹿路书并转换轨迹…';
- const data=platform==='xingzhe'?await fetchXingzheRoute(url,local?{endpoint:'/api/import/xingzhe'}:undefined):await fetchOnelapRoute(url,coordinates,local?{endpoint:'/api/import/onelap'}:undefined);
+ $('importStatus').textContent=platform==='igpsport'?'正在获取 iGPSPORT 公开轨迹…':platform==='xingzhe'?'正在获取行者公开轨迹…':'正在获取顽鹿路书并转换轨迹…';
+ const data=platform==='igpsport'?await fetchIgpsportRoute(url):platform==='xingzhe'?await fetchXingzheRoute(url,local?{endpoint:'/api/import/xingzhe'}:undefined):await fetchOnelapRoute(url,coordinates,local?{endpoint:'/api/import/onelap'}:undefined);
  const parsed=parseGPX(data.gpx,data.name||'分享路书');if(parsed.points.length!==data.pointCount)throw Error('转换结果的轨迹点数不一致，未替换当前路书。');
- parsed.sourceUrl=data.sourceUrl||url;setRoute(parsed,`${platform==='xingzhe'?'行者公开路书':data.sourceType==='route'?'顽鹿公开路书':'顽鹿分享路线'} · ${data.pointCount.toLocaleString()} 个点`);
+ parsed.sourceUrl=data.sourceUrl||url;setRoute(parsed,`${platform==='igpsport'?'iGPSPORT 公开路书':platform==='xingzhe'?'行者公开路书':data.sourceType==='route'?'顽鹿公开路书':'顽鹿分享路线'} · ${data.pointCount.toLocaleString()} 个点`);
  routeDownloadUrl=URL.createObjectURL(new Blob([data.gpx],{type:'application/gpx+xml;charset=utf-8'}));$('routeDownload').href=routeDownloadUrl;$('routeDownload').download=data.filename||'分享路书.gpx';$('routeDownload').hidden=false;
  $('importStatus').textContent=`已导入 ${data.pointCount.toLocaleString()} 个轨迹点。${data.coordinateNote||''}`;imported=true;
  }catch(e){$('importStatus').className='error';$('importStatus').textContent=e.message;}

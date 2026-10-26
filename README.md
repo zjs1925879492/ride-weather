@@ -4,7 +4,7 @@
 
 ## 使用
 
-1. 粘贴顽鹿或行者公开路书分享链接导入，或上传 WGS84 坐标的 GPX，也可载入环滆湖示例。
+1. 粘贴顽鹿、行者或 iGPSPORT 国内站公开路书分享链接导入，或上传 WGS84 坐标的 GPX，也可载入环滆湖示例。
 2. 设置出发时间（北京时间）、骑行均速、总休息时间和采样间距。
 3. 点击“查询沿途天气”，在天气卡片与地图之间查看各点详情。
 
@@ -87,3 +87,11 @@
 本机使用 `/api/import/xingzhe`；正式站点使用现有转换 Worker 的 `/api/xingzhe`。后端源码、许可与配置一同保存在 `services/route-import/` 中，与静态网站分开部署。发布需先更新后端并验证，再发布网站；线上验证记录见 `RELEASE.md`。
 
 检查：`node xingzhe-check.mjs`；后端 GPX 解码、域名与文件校验、无凭证请求、错误与超时；浏览器检查覆盖真实样本导入和 GPX 下载、收藏恢复、无效导入保留旧路线与天气、窄屏及顽鹿回归。确定性天气分支使用合成数据，实际本机页面另行完成真实天气联调。
+## iGPSPORT 公开路书导入
+
+支持国内站 `https://analyse.zh.igpsport.com/new/my/road/book/share?routeId=70714&language=zh-Hans` 和 `/new/road/book/share` 分享链接。浏览器匿名跨域读取官方公开分享接口 `https://prod.zh.igpsport.com/service/sportg/roadbook4j/road-book/detailsRoutesShare`，在浏览器中将原始 WGS84 轨迹、可用高程及途经点生成 GPX，接入天气查询、本机收藏和 GPX 下载。
+
+该接口当前支持本机、GitHub Pages 与 Cloudflare 网站来源。访问需要登录的路书时，页面提示用户从 iGPSPORT 导出 GPX 后上传。导入设置 30 秒超时、8 MB 响应上限和 150,000 点上限；检查路书 ID、坐标和数据结构后更新路线。
+
+本机实测样本 `70714`：“环太湖310公里路书”，3,946 个轨迹点，GPX 中逐点保留官方响应的经纬度和高程。几何长度显示 310.36 km，平台距离字段为 309.81241 km，两者分别使用前端几何计算与平台统计值。浏览器验证包含真实跨域导入、GPX 下载、收藏刷新恢复、错误后保留路线与重试、17 点真实天气查询和手机布局；代码检查运行 `npm run check`。
+
